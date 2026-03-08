@@ -1,0 +1,897 @@
+---
+title: "JSC370 Midterm Project"
+format:
+  html:
+    embed-resources: true
+jupyter: python3
+---
+
+
+## 1. Introduction
+
+### Motivation
+Video games are one of the most popular entertainment today, with millions of players spending large amounts of time playing games on platforms such as Steam, Xbox, etc, so it is interesting to ask what characteristics of a game are related to how long players actually spend playing it.
+
+One useful way to measure player engagement is average playtime. Some games are designed to be played for many hours, while others are intended for shorter but also enjoyable experiences. Characteristics such as genre, price, release year, or popularity may influence how much time players spend in a game.
+
+The goal of this project is to explore how different game characteristics are related to average playtime. Using data collected from public web APIs, we combine gameplay statistics and game metadata to investigate whether certain features of a game are associated with longer or shorter playtime.
+
+### Database Introduction
+
+The dataset used in this project combines information from two public APIs: [SteamSpy](https://steamspy.com/api.php) and [RAWG](https://rawg.io/apidocs).
+
+SteamSpy provides aggregated statistics about 300000+ games available on the Steam. These statistics are estimated from publicly available player profile data. From SteamSpy, we obtain several variables related to player engagement and popularity, including the estimated number of owners (owners), the number of positive reviews (positive) and negative reviews (negative), the average lifetime playtime measured in minutes (average_forever), and the game price in US cents(price).
+
+The RAWG Video Games Database API provides additional metadata about 500000+ games across multiple platforms, including the release date of the game (released), genre classifications (genres), critic scores (metacritic), and supported platforms (platforms).
+
+In this analysis, we use average playtime as the outcome variable, and consider the relationship between average playtime and the following variables:
+
+Game genre (genres): describe the category of the game, such as action, strategy, or role-playing.
+
+Game price (price): represent the listed price of the game on Steam.
+
+Release year(released): the release date.
+
+Game popularity(owners): the estimated range of owners.
+
+
+### Research Questions
+
+Specifically, we will focus on the following research questions:
+
+- How does game playtime differ across game genres (genres)?
+- Is game price (price) associated with average playtime (average_forever)?
+- How does game release year derived from the release date (released) relate to playtime (average_forever)?
+- Is game popularity measured by number of owners (owners) associated with playtime (average_forever)?
+
+
+
+
+## 2. Methods
+
+### Data acquisition
+
+The data used in this project were collected from two public web APIs: the SteamSpy API and the RAWG Video Games Database API. SteamSpy was used as the primary source of game-level engagement statistics, while RAWG was used to obtain additional metadata such as genre and release year.
+
+We first queried the SteamSpy API using the `all` endpoint across multiple pages. This endpoint returns price, estimated number of owners, review counts, average lifetime playtime, etc for games available on the Steam platform. It contains more than 300000 games. But due to the API only allows one request for one page per minute, for convenience, we only queried the first 20 pages of the API results to obtain a broad sample of games. There are 1000 games per page, so we fetced totally 20000 games.
+
+To obtain additional metadata, we use the game titles from the SteamSpy dataset to query the RAWG API. Since the API has a request limit of 20000 requests per three months, we randomly sampled 1000 games from the SteamSpy dataset to query the RAWG API. Among these 1000 queried games, RAWG API were successfully retrieved for 996 games. There are four games that the RAWG API failed to retrieve: `BLADECHIMERA`, `RutonyChat`, `CatTuber`, and `VoiceAttack`. We also manually searched these four games on RAWG website and found that these four games are missing on the RAWG database instead of due to name format mismatch. For each game title, the RAWG API returns information including release date and genre classifications.
+
+To ensure reproducibility and avoid repeatedly calling external APIs when rendering the report, the downloaded API results were stored locally as cache files. When cached files already exist, the data are loaded directly from disk instead of sending new API requests.
+
+```{python}
+#| label: setup
+#| include: false
+import pandas as pd
+import numpy as np
+import requests
+import time
+import re
+import os
+import ast
+from dotenv import load_dotenv
+import warnings
+warnings.filterwarnings('ignore')
+from IPython.display import display
+from scipy.stats import pearsonr, f_oneway
+from plotnine import *
+
+load_dotenv()
+
+RAWG_API_KEY = os.environ.get("API_KEY")
+RAWG_BASE_URL = "https://api.rawg.io/api"
+STEAMSPY_BASE_URL = "https://steamspy.com/api.php"
+
+HEADERS = {
+    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": "JSC370-Midterm-Project/1.0 (educational use)"
+}
+
+STEAMSPY_CACHE_FILE = "steamspy_data_20pages.csv"
+RAWG_CACHE_FILE = "rawg_data.csv"
+MAX_RAWG_QUERIES = 1000
+STEAMSPY_PAGES = 20
+```
+
+```{python}
+#| label: steamspy-all
+#| include: false
+if os.path.exists(STEAMSPY_CACHE_FILE):
+    print(f"Loading SteamSpy data from cache: {STEAMSPY_CACHE_FILE}")
+    df_steamspy = pd.read_csv(STEAMSPY_CACHE_FILE)
+else:
+    print("No SteamSpy cache found, fetching first 20 pages from SteamSpy API...")
+
+    steamspy_records = []
+
+    for page in range(STEAMSPY_PAGES):
+        print(f"Fetching SteamSpy page {page + 1}/{STEAMSPY_PAGES}...")
+
+        response_all = requests.get(
+            STEAMSPY_BASE_URL,
+            params={"request": "all", "page": page},
+            headers=HEADERS,
+            timeout=60
+        )
+
+        if response_all.status_code == 200:
+            steamspy_all = response_all.json()
+
+            for appid, game_data in steamspy_all.items():
+                record = {
+                    "appid": appid,
+                    "name": game_data.get("name", ""),
+                    "price": game_data.get("price", 0),
+                    "owners": game_data.get("owners", np.nan),
+                    "positive": game_data.get("positive", 0),
+                    "negative": game_data.get("negative", 0),
+                    "average_forever": game_data.get("average_forever", 0),
+                    "average_2weeks": game_data.get("average_2weeks", 0),
+                    "median_forever": game_data.get("median_forever", 0),
+                    "median_2weeks": game_data.get("median_2weeks", 0),
+                }
+                steamspy_records.append(record)
+        else:
+            print(f"Warning: Error fetching SteamSpy page {page}: {response_all.status_code}")
+
+        if page < STEAMSPY_PAGES - 1:
+            time.sleep(60)
+
+    df_steamspy = pd.DataFrame(steamspy_records)
+    df_steamspy.to_csv(STEAMSPY_CACHE_FILE, index=False)
+    print(f"Saved SteamSpy data to cache: {STEAMSPY_CACHE_FILE}")
+```
+
+
+
+### Data cleaning and wrangling
+
+After collecting the raw API data, we perform several cleaning and preprocessing steps to prepare the data for analysis.
+
+First, since there are some duplicated game titles in the SteamSpy dataset, we retained only games whose cleaned title appeared exactly once in the SteamSpy dataset. The duplicated game names are due to different records may share the same game name even though they correspond to different entries or versions. Since our workflow relies on game titles to query metadata from the RAWG API and to merge the datasets, keeping multiple records with the same title would create ambiguity in the mapping between games across the two sources. Therefore, we remove the duplicated game names records to keep the game name unique.
+
+Next, we check the missing values, and there are no NaN values in the SteamSpy dataset. We also check the summary statistics of the numeric variables. We found that there are 3872 games out of 20000 with price 0, and 5307 games with average playtime 0. It is possible that these games are free, but a value of 0 minutes may reflect missing playtime estimates rather than true statistics, especially there are some famous games like `Grand Theft Auto IV: Complete Edition`, `Half-Life 2: Lost Coast`, etc. We also check the game names with empty string, and there are no such games. So we drop the games with average playtime 0 from the dataset at the end.
+
+Also, we convert numeric variables such as price and average playtime into numeric formats. We convert Steam prices from cents to dollars, and average lifetime playtime from minutes to hours to improve interpretability.
+
+The SteamSpy API reports the number of owners as a range (e.g. "100000..200000") rather than an exact value. To obtain a numeric approximation of popularity, we convert each owner range to its midpoint.
+
+Finally, we standardize game titles by removing punctuation, collapsing repeated whitespace, converting text to lowercase, and storing the cleaned title in a new column `name_clean`. We also apply the same title-standardization procedure to the RAWG results so that a consistent matching field can be used during the merge. This is neccessary because RAWG API using a fuzzy search algorithm to match game titles, so the game titles in the RAWG dataset may not be exactly the same as the game titles in the SteamSpy dataset.
+
+
+For 996 RAWG records, there are 37 missing values in released data and 16 games with empty genre list. We drop the games with missing released data or empty genre list. Next,
+we convert release dates returned by RAWG into release years, and simplify genre lists by extracting the first listed genre as the primary genre.
+
+Before cleaning and wrangling, SteamSpy dataset has 20000 records and RAWG dataset has 996 records, and after cleaning and wrangling, SteamSpy dataset reduced to 14366 records and RAWG dataset reduced to 946 records.
+
+
+
+```{python}
+#| label: steamspy-checks
+#| include: false
+display(df_steamspy.isnull().sum())
+display(df_steamspy.describe())
+display(df_steamspy[(df_steamspy["price"] == 0)])
+display(df_steamspy[(df_steamspy["average_forever"] == 0)])
+display(df_steamspy[(df_steamspy["name"].str.strip() == "")])
+```
+
+```{python}
+#| label: steamspy-process
+#| include: false
+def parse_owners(x):
+    if pd.isna(x):
+        return np.nan
+    if isinstance(x, str) and ".." in x:
+        try:
+            a, b = x.split("..")
+            a = float(a.replace(",", "").strip())
+            b = float(b.replace(",", "").strip())
+            return (a + b) / 2
+        except:
+            return np.nan
+    try:
+        return float(str(x).replace(",", "").strip())
+    except:
+        return np.nan
+
+def clean_game_name(name):
+    if pd.isna(name):
+        return ""
+    cleaned = re.sub(r"[^\w\s]", "", str(name))
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip().lower()
+
+df_steamspy = df_steamspy.drop_duplicates(subset=["appid"]).copy()
+
+df_steamspy["price"] = pd.to_numeric(df_steamspy["price"], errors="coerce") / 100.0
+
+df_steamspy["average_forever"] = pd.to_numeric(df_steamspy["average_forever"], errors="coerce")
+
+df_steamspy["owners_num"] = df_steamspy["owners"].apply(parse_owners)
+
+df_steamspy["average_forever_hours"] = df_steamspy["average_forever"] / 60.0
+df_steamspy["name_clean"] = df_steamspy["name"].apply(clean_game_name)
+
+name_counts = df_steamspy["name_clean"].value_counts()
+unique_clean_names = name_counts[name_counts == 1].index
+
+df_steamspy_unique = df_steamspy[
+    df_steamspy["name_clean"].isin(unique_clean_names)
+].copy()
+
+eligible_games = df_steamspy_unique[
+    df_steamspy_unique["name"].notna() &
+    (df_steamspy_unique["name"].str.strip() != "") &
+    (df_steamspy_unique["average_forever"] > 0)
+].copy()
+
+```
+
+```{python}
+#| label: steamspy-count-summary
+#| include: false
+print(f"Original SteamSpy records: {len(df_steamspy)}")
+print(f"SteamSpy records after cleaning and wrangling: {len(eligible_games)}")
+```
+
+
+```{python}
+#| label: rawg-strategy
+#| include: false
+
+games_to_query = eligible_games.sample(
+    n=min(MAX_RAWG_QUERIES, len(eligible_games)),
+    random_state=42
+)["name"].values
+
+display(games_to_query)
+```
+
+```{python}
+#| label: rawg-fetch
+#| include: false
+rawg_records = []
+failed_searches = []
+
+if os.path.exists(RAWG_CACHE_FILE):
+    print(f"Loading RAWG data from cache: {RAWG_CACHE_FILE}")
+    df_rawg = pd.read_csv(RAWG_CACHE_FILE)
+
+    df_rawg["genres"] = df_rawg["genres"].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) and x.startswith("[") else x
+    )
+else:
+    print("No cached RAWG data found, fetching from RAWG API...")
+
+    for i, game_name in enumerate(games_to_query):
+        if i % 50 == 0:
+            print(f"RAWG API: {i}/{len(games_to_query)} games processed")
+
+        search_url = f"{RAWG_BASE_URL}/games"
+        search_params = {
+            "key": RAWG_API_KEY,
+            "search": game_name,
+            "search_precise": True,
+            "page_size": 5
+        }
+
+        for attempt in range(2):
+            try:
+                response = requests.get(
+                    search_url,
+                    params=search_params,
+                    headers=HEADERS,
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    results = data.get("results", [])
+
+                    if results:
+                        game = results[0]
+                        record = {
+                            "name": game.get("name", ""),
+                            "released": game.get("released", ""),
+                            "genres": [g.get("name", "") for g in game.get("genres", [])]
+                        }
+                        rawg_records.append(record)
+                    else:
+                        failed_searches.append(game_name)
+
+                    break
+
+                elif response.status_code == 429:
+                    print(f"Warning: RAWG rate limit hit for {game_name}, waiting 60 seconds...")
+                    time.sleep(60)
+
+                else:
+                    if attempt == 1:
+                        print(f"Warning: Error fetching {game_name}: {response.status_code}")
+                        failed_searches.append(game_name)
+
+            except Exception as e:
+                if attempt == 1:
+                    print(f"Warning: Error fetching {game_name}: {e}")
+                    failed_searches.append(game_name)
+
+        time.sleep(0.5)
+
+    print(f"Failed searches: {len(failed_searches)}")
+
+    df_rawg = pd.DataFrame(rawg_records)
+
+    # convert genres to string so it can be saved to csv
+    df_rawg["genres"] = df_rawg["genres"].apply(lambda x: str(x) if isinstance(x, list) else x)
+    df_rawg.to_csv(RAWG_CACHE_FILE, index=False)
+
+
+    print(f"Saved RAWG data to cache: {RAWG_CACHE_FILE}")
+
+    df_rawg["genres"] = df_rawg["genres"].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) and x.startswith("[") else x
+    )
+```
+
+```{python}
+#| label: rawg-failed-searches
+#| include: false
+display(df_rawg.shape)
+display(failed_searches)
+```
+
+
+```{python}
+#| label: rawg-missing-values
+#| include: false
+print("Missing values in RAWG data:")
+display(df_rawg.isnull().sum())
+empty_genres = df_rawg["genres"].apply(lambda x: isinstance(x, list) and len(x) == 0)
+
+print("Number of games with empty genre list:", empty_genres.sum())
+```
+
+
+```{python}
+#| label: rawg-filter
+#| include: false
+
+df_rawg_cleaned = df_rawg[
+    df_rawg["released"].notna()
+]
+
+df_rawg_cleaned = df_rawg_cleaned[
+    df_rawg["genres"].apply(lambda x: isinstance(x, list) and len(x) > 0)
+].copy()
+```
+
+```{python}
+#| label: rawg-process
+#| include: false
+
+df_rawg_cleaned["release_year"] = pd.to_datetime(df_rawg_cleaned["released"]).dt.year
+
+df_rawg_cleaned["primary_genre"] = df_rawg_cleaned["genres"].str[0]
+
+df_rawg_cleaned["genres_str"] = df_rawg_cleaned["genres"].str.join(", ")
+
+df_rawg_cleaned["name_clean"] = df_rawg_cleaned["name"].apply(clean_game_name)
+```
+
+### RAWG processed data
+```{python}
+#| label: rawg-clean-summary
+#| include: false
+display(df_rawg_cleaned.head())
+print(f"RAWG records fetched: {len(df_rawg)}")
+print(f"RAWG records after cleaning and wrangling: {len(df_rawg_cleaned)}")
+```
+
+
+
+
+
+
+### Data integration
+
+After cleaning and wrangling the SteamSpy and RAWG datasets separately, we merged the two sources using the standardized game title field `name_clean` using an inner join.
+
+After merging, there are 865 games that are successfully matched across both APIs, which means there are 81 games not successfully matched even using the cleaned game titles `name_clean` for matching. This is due to the fuzzy search algorithm used by the RAWG API, some games exist in the SteamSpy data but not in the RAWG data, RAWG API still return a result but it is not always the correct game, resulting in some games being matched to the wrong game.
+
+We also check the summary statistics of the merged dataset and found that there is one game with average playtime greater than 1000 hours, specifically, `WitchSpring3 Re:Fine - The Story of Eirudy` has a average
+playtime of 15918.67 hours, which is unlikely to be a valid data point, so we drop this record.
+
+From the merged dataset, we kept the variables directly relevant to the research questions: average playtime, primary genre, price, estimated number of owners, and release year, and we renamed these variables in the final analysis dataset to `playtime`, `genre`, `price`, `owners`, and `release_year`.
+
+Because the ownership variable is highly right-skewed, we also created a log-transformed version, `log_owners`, using log1p for use in later exploratory plots and analyses. 
+
+Finally, we performed a check of the missing values in the final analysis dataset and found no missing values at any column in the dataset.
+
+Eventually, there are 864 games remaining in the merged dataset.
+
+```{python}
+#| label: data-merge
+#| include: false
+df_merged = eligible_games.merge(
+    df_rawg_cleaned[["name", "name_clean", "release_year", "primary_genre"]],
+    on="name_clean",
+    how="inner",
+    suffixes=("_steamspy", "_rawg")
+)
+
+df_merged["name"] = df_merged["name_rawg"]
+```
+
+```{python}
+#| label: data-unmatched
+#| include: false
+steam_names = set(eligible_games["name_clean"])
+rawg_names = set(df_rawg_cleaned["name_clean"])
+
+unmatched_steam = rawg_names - steam_names
+len(unmatched_steam)
+
+unmatched_rawg = df_rawg_cleaned[df_rawg_cleaned["name_clean"].isin(unmatched_steam)].copy()
+display(unmatched_rawg[["name", "name_clean"]].sort_values("name").head(50))
+```
+
+```{python}
+#| label: data-anomaly-check
+#| include: false
+
+display(df_merged.describe())
+display(df_merged[df_merged["average_forever_hours"] >= 1000])
+df_merged = df_merged[df_merged["average_forever_hours"] < 1000]
+```
+
+```{python}
+#| label: data-cleanup
+#| include: false
+df_final = df_merged[[
+    "name",
+    "average_forever_hours",
+    "primary_genre",
+    "price",
+    "owners_num",
+    "release_year"
+]].copy()
+
+df_final = df_final.rename(columns={
+    "average_forever_hours": "playtime",
+    "primary_genre": "genre",
+    "owners_num": "owners"
+})
+
+df_final["log_owners"] = np.log1p(df_final["owners"])
+
+display(df_final.isnull().sum())
+```
+
+The following table shows the first 5 rows of the final analysis dataset:
+
+```{python}
+#| label: final-data-preview
+#| echo: false
+display(df_final.head())
+```
+
+```{python}
+#| label: data-record-number-summary
+#| include: false
+summary_table = pd.DataFrame({
+    "Stage": [
+        "SteamSpy raw records",
+        "SteamSpy after cleaning and wrangling",
+        "RAWG records fetched",
+        "RAWG after cleaning and wrangling",
+        "Final analysis dataset"
+    ],
+    "Count": [
+        len(df_steamspy),
+        len(eligible_games),
+        len(df_rawg),
+        len(df_rawg_cleaned),
+        len(df_final)
+    ]
+})
+
+display(summary_table)
+```
+
+
+
+### Exploratory analysis methods
+
+Our exploratory analysis focuses on how average playtime relates to the main explanatory variables: genre, price, release year, and estimated number of owners.
+
+We begin with summary statistics of the final merged dataset. 
+
+To understand the overall distribution of playtime, we: 
+- Calculate summary measures such as the mean, median, and spread, together with a histogram of playtime.
+- Examine the distribution of the owners variable before and after log transformation to assess its right-skewness.
+- Summarize the number of games in each genre using a bar plot.
+
+To address the first research question, which compares playtime across genres, we:
+- Use a violin plot to compare the distribution of playtime across genre groups, and also plot the mean and median playtime within each genre.
+- Use ANOVA to test whether mean playtime differs across genres overall.
+
+For the remaining research questions, price, release year, and number of owners are treated as continuous variables. We:
+- Examine their pairwise relationships with playtime and with each other using a correlation matrix.
+- Use scatterplots with fitted trend lines to visualize the relationship between playtime and each continuous predictor.
+
+To examine whether the relationship between price and playtime differs across game types, we:
+- Create faceted scatterplots of price versus playtime by genre.
+
+
+```{python}
+#| label: eda-setup
+#| include: false
+
+theme_set(
+    theme_minimal(base_size=11) +
+    theme(
+        figure_size=(5, 4),
+        axis_title=element_text(size=10),
+        axis_text=element_text(size=9),
+        legend_title=element_text(size=9),
+        legend_text=element_text(size=8)
+    )
+)
+
+MAIN_FILL = "#4C78A8"
+MAIN_LINE = "#2F5D8A"
+POINT_COLOR = "#4C78A8"
+TREND_COLOR = "#E45756"
+```
+
+## 3. Preliminary Results
+
+#### Overall distribution of playtime
+
+
+```{python}
+#| label: playtime-describe
+#| echo: false
+display(df_final.describe())
+```
+
+```{python}
+#| label: playtime-outcome-summary-table
+#| echo: false
+playtime_summary = pd.DataFrame({
+    "Statistic": ["Count", "Mean", "Median", "Standard Deviation", "Minimum", "Maximum"],
+    "Value": [
+        df_final["playtime"].count(),
+        df_final["playtime"].mean(),
+        df_final["playtime"].median(),
+        df_final["playtime"].std(),
+        df_final["playtime"].min(),
+        df_final["playtime"].max()
+    ]
+})
+
+playtime_summary["Value"] = playtime_summary["Value"].round(2)
+display(playtime_summary)
+```
+
+```{python}
+#| label: playtime-histogram
+#| echo: false
+(
+    ggplot(df_final, aes(x="playtime"))
+    + geom_histogram(bins=30, fill=MAIN_FILL, color="white")
+    + labs(
+        title="Distribution of Average Playtime",
+        x="Average playtime (hours)",
+        y="Number of games"
+    )
+    + theme(figure_size=(7, 4))
+)
+```
+
+#### Distribution of owners before and after log transformation
+
+```{python}
+#| label: owners-transform-comparison
+#| echo: false
+owners_compare_df = df_final.melt(
+    value_vars=["owners", "log_owners"],
+    var_name="version",
+    value_name="value"
+)
+
+owners_compare_df["version"] = owners_compare_df["version"].map({
+    "owners": "Original owners",
+    "log_owners": "Log-transformed owners"
+})
+
+owners_compare_df["version"] = pd.Categorical(
+    owners_compare_df["version"],
+    categories=[
+        "Original owners",
+        "Log-transformed owners"
+    ],
+    ordered=True
+)
+
+(
+    ggplot(owners_compare_df, aes(x="value"))
+    + geom_histogram(bins=30, fill=MAIN_FILL, color="white")
+    + facet_wrap("~version", scales="free_x", nrow=1)
+    + labs(
+        title="Owners Before and After Log Transformation",
+        x="Value",
+        y="Number of games"
+    )
+    + theme(
+        figure_size=(12, 4),
+        subplots_adjust={"wspace": 0.25}
+    )
+)
+```
+
+```{python}
+#| label: owners-skewness-table
+#| echo: false
+owners_distribution_summary = pd.DataFrame({
+    "Variable": ["owners", "log_owners"],
+    "Mean": [df_final["owners"].mean(), df_final["log_owners"].mean()],
+    "Median": [df_final["owners"].median(), df_final["log_owners"].median()],
+    "Standard Deviation": [df_final["owners"].std(), df_final["log_owners"].std()],
+    "Skewness": [df_final["owners"].skew(), df_final["log_owners"].skew()]
+})
+
+owners_distribution_summary[["Mean", "Median", "Standard Deviation", "Skewness"]] = (
+    owners_distribution_summary[["Mean", "Median", "Standard Deviation", "Skewness"]].round(2)
+)
+
+display(owners_distribution_summary)
+```
+
+#### Distribution of games across genres
+
+
+```{python}
+#| label: genre-count-plot
+#| echo: false
+
+genre_counts = (
+    df_final["genre"]
+    .value_counts()
+    .rename_axis("genre")
+    .reset_index(name="n_games")
+)
+
+genre_counts_plot = genre_counts.copy()
+genre_counts_plot["genre"] = pd.Categorical(
+    genre_counts_plot["genre"],
+    categories=genre_counts_plot.sort_values("n_games")["genre"],
+    ordered=True
+)
+
+(
+    ggplot(genre_counts_plot, aes(x="genre", y="n_games"))
+    + geom_col(fill=MAIN_FILL)
+    + coord_flip()
+    + labs(
+        title="Number of Games by Genre",
+        x="Genre",
+        y="Number of games"
+    )
+    + theme(figure_size=(7, 5))
+)
+```
+
+#### Playtime across genres
+
+
+
+
+```{python}
+#| label: genre-playtime-plot
+#| echo: false
+genre_order = (
+    df_final.groupby("genre")["playtime"]
+    .median()
+    .sort_values()
+    .index
+)
+
+df_genre_plot = df_final.copy()
+df_genre_plot["genre"] = pd.Categorical(
+    df_genre_plot["genre"],
+    categories=genre_order,
+    ordered=True
+)
+
+(
+    ggplot(df_genre_plot, aes(x="genre", y="playtime"))
+    + geom_violin(fill=MAIN_FILL, alpha=0.7)
+    + coord_flip()
+    + labs(
+        title="Playtime Distribution Across Genres",
+        x="Genre",
+        y="Average playtime (hours)"
+    )
+    + theme(figure_size=(12, 9))
+)
+```
+
+
+```{python}
+#| label: genre-summary-point-plot
+#| echo: false
+genre_summary_plot = (
+    df_final.groupby("genre", as_index=False)
+    .agg(
+        mean_playtime=("playtime", "mean"),
+        median_playtime=("playtime", "median")
+    )
+)
+
+genre_summary_long = genre_summary_plot.melt(
+    id_vars="genre",
+    value_vars=["mean_playtime", "median_playtime"],
+    var_name="statistic",
+    value_name="playtime_value"
+)
+
+genre_order = (
+    genre_summary_plot.sort_values("median_playtime")["genre"]
+)
+
+genre_summary_long["genre"] = pd.Categorical(
+    genre_summary_long["genre"],
+    categories=genre_order,
+    ordered=True
+)
+
+genre_summary_long["statistic"] = genre_summary_long["statistic"].map({
+    "mean_playtime": "Mean",
+    "median_playtime": "Median"
+})
+
+(
+    ggplot(genre_summary_long, aes(x="genre", y="playtime_value", color="statistic"))
+    + geom_point(size=2.5)
+    + coord_flip()
+    + labs(
+        title="Mean and Median Playtime by Genre",
+        x="Genre",
+        y="Playtime (hours)",
+        color="Statistic"
+    )
+    + theme(figure_size=(8, 6))
+)
+```
+
+```{python}
+#| label: genre-anova
+#| echo: false
+anova_groups = [
+    group["playtime"].values
+    for _, group in df_final.groupby("genre")
+    if len(group) >= 2
+]
+
+anova_result = f_oneway(*anova_groups)
+
+anova_table = pd.DataFrame({
+    "Test": ["One-way ANOVA"],
+    "F statistic": [anova_result.statistic],
+    "p-value": [anova_result.pvalue]
+})
+
+anova_table[["F statistic", "p-value"]] = anova_table[["F statistic", "p-value"]].round(4)
+display(anova_table)
+```
+
+#### Continuous variables and playtime
+
+```{python}
+#| label: correlation-heatmap
+#| echo: false
+
+corr_vars = ["playtime", "price", "release_year", "log_owners"]
+
+corr_matrix = df_final[corr_vars].corr()
+
+corr_df = (
+    corr_matrix
+    .reset_index()
+    .melt(id_vars="index", var_name="Variable2", value_name="Correlation")
+    .rename(columns={"index": "Variable1"})
+)
+
+(
+    ggplot(corr_df, aes(x="Variable1", y="Variable2", fill="Correlation"))
+    + geom_tile()
+    + geom_text(aes(label="round(Correlation, 2)"), size=9)
+    + scale_fill_gradient2(
+        low="#3B82F6",
+        mid="white",
+        high="#EF4444",
+        midpoint=0
+    )
+    + labs(
+        title="Correlation Matrix of Numeric Variables",
+        x="",
+        y=""
+    )
+    + theme(
+        figure_size=(6,5),
+        axis_text_x=element_text(rotation=45, ha="right")
+    )
+)
+```
+
+```{python}
+#| label: continuous-scatter-facets
+#| echo: false
+continuous_plot_df = df_final.melt(
+    id_vars="playtime",
+    value_vars=["price", "release_year", "log_owners"],
+    var_name="predictor",
+    value_name="value"
+)
+
+continuous_plot_df["predictor"] = continuous_plot_df["predictor"].map({
+    "price": "Price",
+    "release_year": "Release year",
+    "log_owners": "Log owners"
+})
+
+(
+    ggplot(continuous_plot_df, aes(x="value", y="playtime"))
+    + geom_point(alpha=0.35, size=1.2, color=POINT_COLOR)
+    + geom_smooth(method="lm", se=False, color=TREND_COLOR, size=1)
+    + facet_wrap("~predictor", scales="free_x", nrow=1)
+    + labs(
+        title="Playtime vs Continuous Predictors",
+        x="Predictor value",
+        y="Average playtime (hours)"
+    )
+    + theme(
+        figure_size=(13, 4),
+        subplots_adjust={"wspace": 0.25}
+    )
+)
+```
+
+#### Faceted scatterplots by genre
+
+
+```{python}
+#| label: price-playtime-by-genre
+#| echo: false
+top_genres = (
+    df_final["genre"]
+    .value_counts()
+    .head(8)
+    .index
+)
+
+df_price_genre = df_final[df_final["genre"].isin(top_genres)].copy()
+df_price_genre["genre"] = pd.Categorical(
+    df_price_genre["genre"],
+    categories=top_genres,
+    ordered=True
+)
+
+(
+    ggplot(df_price_genre, aes(x="price", y="playtime"))
+    + geom_point(alpha=0.35, size=1.1, color=POINT_COLOR)
+    + geom_smooth(method="lm", se=False, color=TREND_COLOR, size=0.8)
+    + facet_wrap("~genre", scales="free_x", ncol=4)
+    + labs(
+        title="Price and Playtime Across the Most Common Genres",
+        x="Price (USD)",
+        y="Average playtime (hours)"
+    )
+    + theme(
+        figure_size=(14, 8),
+        subplots_adjust={"wspace": 0.25, "hspace": 0.35}
+    )
+)
+```
