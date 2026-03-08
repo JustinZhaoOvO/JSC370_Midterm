@@ -579,6 +579,7 @@ display(playtime_summary)
 
 An examination of the key summary statistics of playtime shows substantial variability in the data. The standard deviation is larger than the mean, indicating a high level of dispersion and suggesting that the distribution is unlikely to be normal. The playtime distribution also appears to be strongly right-skewed, as the mean exceeds the 75th percentile, implying that a small number of games have very large playtime values that pull the mean upward. No clearly impossible observations are present in the dataset. For example, the minimum playtime (0.0167 hours) is plausible, as it may correspond to a user who has just purchased the game and has not meaningfully played it yet.
 
+The playtime-histogram is used to evaluate the distribution of the playtime, thus we can evaluate the skewness and frequent observations. 
 ```{python}
 #| label: playtime-histogram
 #| echo: false
@@ -598,6 +599,7 @@ The histogram shows that the distribution of average playtime is highly right-sk
 
 #### Distribution of owners before and after log transformation
 
+Those 2 histograms are used to compare the distirbution of the number of owners before and after the transformation, thus we can conclude the effectiveness of the approach. 
 ```{python}
 #| label: owners-transform-comparison
 #| echo: false
@@ -639,6 +641,7 @@ owners_compare_df["version"] = pd.Categorical(
 
 The distribution of game owners is highly right-skewed in its original scale, with most games having relatively small numbers of owners while a small number of games have extremely large player bases. This creates a long right tail and compresses the majority of observations near the lower end of the distribution. After applying a log transformation, the distribution becomes substantially more symmetric and spread out. The transformation reduces the influence of extreme values and makes the distribution more suitable for visualization and further statistical modeling.
 
+The table below shows the transformed results of number of users follows a better distribution.
 ```{python}
 #| label: owners-skewness-table
 #| echo: false
@@ -659,7 +662,7 @@ display(owners_distribution_summary)
 
 #### Distribution of games across genres
 
-
+The count plot(bar) allows us to understand the number of observations within each genre categroy, thus we can examinate the sampling bias. 
 ```{python}
 #| label: genre-count-plot
 #| echo: false
@@ -694,7 +697,7 @@ genre_counts_plot["genre"] = pd.Categorical(
 The bar chart illustrates the composition of the dataset across different game genres. Indie games constitute the largest share, followed by Casual, Strategy, and Adventure titles. In contrast, several genres such as Educational, Family, and Puzzle are only sparsely represented. This indicates a clear genre imbalance within the dataset, where certain categories dominate while others appear only rarely. Such imbalance may reflect broader trends in the game market, but it may also introduce potential sampling bias, meaning that analyses based on this dataset could disproportionately reflect the characteristics of more common genres like Indie and Casual games. Which means potential risk in applyting entropy-based classification models in the future.
 
 #### Playtime across genres
-
+The genre vs playtime plot allows us to study the differenceses of distribution of playtime across different genres. 
 ```{python}
 #| label: genre-playtime-plot
 #| echo: false
@@ -777,6 +780,8 @@ genre_summary_long["statistic"] = genre_summary_long["statistic"].map({
 
 The mean playtime is generally higher than the median across most genres, indicating right-skewed playtime distributions. This pattern suggests that a small number of games with very long playtimes increase the average values. Genres such as Massively Multiplayer and Simulation exhibit particularly large gaps between the mean and median, suggesting strong tail beahavior.
 
+
+The ANOVA test is used to examinate whether there's a significant differences in average playtime across different game genres.
 ```{python}
 #| label: genre-anova
 #| echo: false
@@ -863,7 +868,7 @@ Several genre pairs exhibit statistically significant differences in playtime (p
 However, many genre pairs display relatively large p-values, indicating that their average playtimes are not statistically distinguishable. Overall, the results suggest that while some genres have significantly different engagement patterns, many genres share similar playtime characteristics.
 
 #### Continuous variables and playtime
-
+The correlation matrix is used to examinate the correlation between the interested features.
 ```{python}
 #| label: correlation-heatmap
 #| echo: false
@@ -903,6 +908,7 @@ corr_df = (
 
 The correlation matrix shows generally weak relationships among the numeric variables. The strongest correlation is between log_owners and playtime (r ≈ 0.32), suggesting that games with longer playtimes tend to have more owners. Other correlations are relatively small, indicating limited linear relationships between price, release year, and the other variables.
 
+The scatter plot and the line of best fit is used to examinate the relationships between playtime and the continuous predictors
 ```{python}
 #| label: continuous-scatter-facets
 #| echo: false
@@ -941,7 +947,7 @@ The scatter plots suggest weak relationships between playtime and the continuous
 The wide dispersion of points around the trend lines suggests that these predictors alone may not fully explain the variability in playtime, indicating that additional factors such as genre or game design characteristics may also play important roles.
 
 #### Faceted scatterplots by genre
-
+The line of best fit in each graph shows relationship between game price and average playtime across several of the most common genres.
 ```{python}
 #| label: price-playtime-by-genre
 #| echo: false
@@ -985,6 +991,8 @@ In contrast, genres such as Simulation show little or even slightly negative ass
 
 
 ## 4. Summary
+
+### Answers of questions. 
 
 - How does game playtime differ across game genres?
 
@@ -1074,3 +1082,11 @@ The deployment pipeline will include:
 - Connecting the API to the website interface so users can obtain real-time predictions.
 
 This system will demonstrate how machine learning models can be integrated with interactive visualization tools to create a practical application for exploring gameplay engagement.
+
+### Limitations (Known)
+
+- The dataset is collected from public web APIs and may not represent the full population of games, which introduces potential sampling bias. Certain genres, such as Indie and Casual games, are overrepresented in the dataset, while others appear relatively infrequently, which may influence the observed relationships between genre and playtime. 
+
+- The playtime variable exhibits a highly skewed distribution with long tails, meaning that a small number of games with extremely long playtimes may disproportionately affect statistical summaries and model estimates. 
+
+- the analysis relies on a limited set of available variables—such as genre, price, release year, and number of owners—and does not account for other potentially important factors, including gameplay complexity, multiplayer features, game length design, or player demographics. Finally, the observational nature of the dataset means that the results identify associations rather than causal relationships, and therefore the findings should be interpreted cautiously when drawing conclusions about what drives player engagement.
