@@ -5,7 +5,11 @@ format:
     embed-resources: true
 jupyter: python3
 ---
-
+## 0. Info
+Github [repo](https://github.com/JustinZhaoOvO/JSC370_Midterm)
+Team Member: 
+- Nanxin(Nathan) Li, 1009834734
+- Boquan Zhao, 1010419343
 
 ## 1. Introduction
 
